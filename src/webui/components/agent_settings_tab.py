@@ -1,249 +1,86 @@
-import json
+import asyncio
 import os
+import uuid
 import gradio as gr
-from gradio.components import Component
-from typing import Any, Dict, Optional
+from browser_use.agent.views import AgentHistoryList
+from browser_use.browser.browser import BrowserConfig
+from browser_use.browser.context import BrowserContextConfig
+from langchain_ollama import ChatOllama
+from src.agent.browser_use.browser_use_agent import BrowserUseAgent
+from src.browser.custom_browser import CustomBrowser
+from src.controller.custom_controller import CustomController
 from src.webui.webui_manager import WebuiManager
-from src.utils import config
-import logging
-from functools import partial
 
-logger = logging.getLogger(__name__)
+def _get_ollama_llm():
+    base_url = os.environ.get("OLLAMA_BASE_URL")
+    if not base_url:
+        raise ValueError("OLLAMA_BASE_URL not set")
+    return ChatOllama(
+        model="huihui_ai/qwen2.5-coder-abliterate",
+        base_url=base_url,
+        temperature=0.6,
+        num_ctx=16000
+    )
 
-def update_model_dropdown(llm_provider):
-    """Update the model name dropdown with predefined models for the selected provider."""
-    if llm_provider in config.model_names:
-        return gr.Dropdown(choices=config.model_names[llm_provider], value=config.model_names[llm_provider][0], interactive=True)
-    else:
-        return gr.Dropdown(choices=[], value="", interactive=True, allow_custom_value=True)
-
-async def update_mcp_server(mcp_file: str, webui_manager: WebuiManager):
-    """Update the MCP server."""
-    if hasattr(webui_manager, "bu_controller") and webui_manager.bu_controller:
-        logger.warning("⚠️ Close controller because mcp file has changed!")
-        await webui_manager.bu_controller.close_mcp_client()
-        webui_manager.bu_controller = None
-    if not mcp_file or not os.path.exists(mcp_file) or not mcp_file.endswith('.json'):
-        logger.warning(f"{mcp_file} is not a valid MCP file.")
-        return None, gr.update(visible=False)
-    with open(mcp_file, 'r') as f:
-        mcp_server = json.load(f)
-    return json.dumps(mcp_server, indent=2), gr.update(visible=True)
-
-def create_agent_settings_tab(webui_manager: WebuiManager):
-    """Creates an agent settings tab."""
-    input_components = set(webui_manager.get_components())
-    tab_components = {}
-
-    with gr.Group():
-        with gr.Column():
-            override_system_prompt = gr.Textbox(label="Override system prompt", lines=4, interactive=True)
-            extend_system_prompt = gr.Textbox(label="Extend system prompt", lines=4, interactive=True)
-
-    with gr.Group():
-        mcp_json_file = gr.File(label="MCP server json", interactive=True, file_types=[".json"])
-        mcp_server_config = gr.Textbox(label="MCP server", lines=6, interactive=True, visible=False)
-
-    with gr.Group():
-        with gr.Row():
-            llm_provider = gr.Dropdown(
-                choices=[provider for provider, model in config.model_names.items()],
-                label="LLM Provider",
-                value=os.getenv("DEFAULT_LLM", "openai"),
-                info="Select LLM provider for LLM",
-                interactive=True
-            )
-            llm_model_name = gr.Dropdown(
-                label="LLM Model Name",
-                choices=config.model_names[os.getenv("DEFAULT_LLM", "openai")],
-                value=config.model_names[os.getenv("DEFAULT_LLM", "openai")][0],
-                interactive=True,
-                allow_custom_value=True,
-                info="Select a model in the dropdown options or directly type a custom model name"
-            )
-        with gr.Row():
-            llm_temperature = gr.Slider(
-                minimum=0.0,
-                maximum=2.0,
-                value=0.6,
-                step=0.1,
-                label="LLM Temperature",
-                info="Controls randomness in model outputs",
-                interactive=True
-            )
-            use_vision = gr.Checkbox(
-                label="Use Vision",
-                value=True,
-                info="Enable Vision(Input highlighted screenshot into LLM)",
-                interactive=True
-            )
-            ollama_num_ctx = gr.Slider(
-                minimum=2 ** 8,
-                maximum=2 ** 16,
-                value=16000,
-                step=1,
-                label="Ollama Context Length",
-                info="Controls max context length model needs to handle (less = faster)",
-                visible=False,
-                interactive=True
-            )
-        with gr.Row():
-            llm_base_url = gr.Textbox(
-                label="Base URL",
-                value="",
-                info="API endpoint URL (if required)"
-            )
-            llm_api_key = gr.Textbox(
-                label="API Key",
-                type="password",
-                value="",
-                info="Your API key (leave blank to use .env)"
-            )
-
-    with gr.Group():
-        with gr.Row():
-            planner_llm_provider = gr.Dropdown(
-                choices=[provider for provider, model in config.model_names.items()],
-                label="Planner LLM Provider",
-                info="Select LLM provider for LLM",
-                value=None,
-                interactive=True
-            )
-            planner_llm_model_name = gr.Dropdown(
-                label="Planner LLM Model Name",
-                interactive=True,
-                allow_custom_value=True,
-                info="Select a model in the dropdown options or directly type a custom model name"
-            )
-        with gr.Row():
-            planner_llm_temperature = gr.Slider(
-                minimum=0.0,
-                maximum=2.0,
-                value=0.6,
-                step=0.1,
-                label="Planner LLM Temperature",
-                info="Controls randomness in model outputs",
-                interactive=True
-            )
-            planner_use_vision = gr.Checkbox(
-                label="Use Vision(Planner LLM)",
-                value=False,
-                info="Enable Vision(Input highlighted screenshot into LLM)",
-                interactive=True
-            )
-            planner_ollama_num_ctx = gr.Slider(
-                minimum=2 ** 8,
-                maximum=2 ** 16,
-                value=16000,
-                step=1,
-                label="Ollama Context Length",
-                info="Controls max context length model needs to handle (less = faster)",
-                visible=False,
-                interactive=True
-            )
-        with gr.Row():
-            planner_llm_base_url = gr.Textbox(
-                label="Base URL",
-                value="",
-                info="API endpoint URL (if required)"
-            )
-            planner_llm_api_key = gr.Textbox(
-                label="API Key",
-                type="password",
-                value="",
-                info="Your API key (leave blank to use .env)"
-            )
-
-    with gr.Row():
-        max_steps = gr.Slider(
-            minimum=1,
-            maximum=1000,
-            value=100,
-            step=1,
-            label="Max Run Steps",
-            info="Maximum number of steps the agent will take",
-            interactive=True
+async def run_agent(webui_manager, task):
+    llm = _get_ollama_llm()
+    cdp = os.environ.get("CDP_URL")
+    if not cdp:
+        raise ValueError("CDP_URL not set")
+    if cdp.startswith("https://"):
+        cdp = "wss://" + cdp[8:]
+    browser = CustomBrowser(
+        config=BrowserConfig(
+            headless=False,
+            cdp_url=cdp,
+            new_context_config=BrowserContextConfig(window_width=1280, window_height=1100)
         )
-        max_actions = gr.Slider(
-            minimum=1,
-            maximum=100,
-            value=10,
-            step=1,
-            label="Max Number of Actions",
-            info="Maximum number of actions the agent will take per step",
-            interactive=True
-        )
-
-    with gr.Row():
-        max_input_tokens = gr.Number(
-            label="Max Input Tokens",
-            value=128000,
-            precision=0,
-            interactive=True
-        )
-        tool_calling_method = gr.Dropdown(
-            label="Tool Calling Method",
-            value="auto",
-            interactive=True,
-            allow_custom_value=True,
-            choices=['function_calling', 'json_mode', 'raw', 'auto', 'tools', "None"],
-            visible=True
-        )
-
-    tab_components.update(dict(
-        override_system_prompt=override_system_prompt,
-        extend_system_prompt=extend_system_prompt,
-        llm_provider=llm_provider,
-        llm_model_name=llm_model_name,
-        llm_temperature=llm_temperature,
-        use_vision=use_vision,
-        ollama_num_ctx=ollama_num_ctx,
-        llm_base_url=llm_base_url,
-        llm_api_key=llm_api_key,
-        planner_llm_provider=planner_llm_provider,
-        planner_llm_model_name=planner_llm_model_name,
-        planner_llm_temperature=planner_llm_temperature,
-        planner_use_vision=planner_use_vision,
-        planner_ollama_num_ctx=planner_ollama_num_ctx,
-        planner_llm_base_url=planner_llm_base_url,
-        planner_llm_api_key=planner_llm_api_key,
-        max_steps=max_steps,
-        max_actions=max_actions,
-        max_input_tokens=max_input_tokens,
-        tool_calling_method=tool_calling_method,
-        mcp_json_file=mcp_json_file,
-        mcp_server_config=mcp_server_config,
-    ))
-    webui_manager.add_components("agent_settings", tab_components)
-
-    llm_provider.change(
-        fn=lambda x: gr.update(visible=x == "ollama"),
-        inputs=llm_provider,
-        outputs=ollama_num_ctx
     )
-    llm_provider.change(
-        lambda provider: update_model_dropdown(provider),
-        inputs=[llm_provider],
-        outputs=[llm_model_name]
+    ctx = await browser.new_context()
+    controller = CustomController()
+    agent = BrowserUseAgent(
+        task=task,
+        llm=llm,
+        browser=browser,
+        browser_context=ctx,
+        controller=controller,
+        use_vision=True
     )
-    planner_llm_provider.change(
-        fn=lambda x: gr.update(visible=x == "ollama"),
-        inputs=[planner_llm_provider],
-        outputs=[planner_ollama_num_ctx]
-    )
-    planner_llm_provider.change(
-        lambda provider: update_model_dropdown(provider),
-        inputs=[planner_llm_provider],
-        outputs=[planner_llm_model_name]
-    )
+    agent.state.agent_id = str(uuid.uuid4())
+    await agent.run(max_steps=100)
+    await ctx.close()
+    await browser.close()
 
-    async def update_wrapper(mcp_file):
-        """Wrapper for handle_pause_resume."""
-        update_dict = await update_mcp_server(mcp_file, webui_manager)
-        yield update_dict
+async def handle_submit(webui_manager, task):
+    if not task:
+        gr.Warning("Please enter a task.")
+        yield {}
+        return
+    webui_manager.bu_chat_history.append({"role": "user", "content": task})
+    yield {c.user_input: gr.update(interactive=False), c.run_btn: gr.update(interactive=False)}
+    try:
+        await run_agent(webui_manager, task)
+        webui_manager.bu_chat_history.append({"role": "assistant", "content": "✅ Task completed."})
+    except Exception as e:
+        webui_manager.bu_chat_history.append({"role": "assistant", "content": f"❌ Error: {e}"})
+    finally:
+        yield {c.user_input: gr.update(interactive=True), c.run_btn: gr.update(interactive=True), c.chatbot: gr.update(value=webui_manager.bu_chat_history)}
 
-    mcp_json_file.change(
-        update_wrapper,
-        inputs=[mcp_json_file],
-        outputs=[mcp_server_config, mcp_server_config]
-    )
+def handle_clear(webui_manager):
+    webui_manager.bu_chat_history = []
+    return {c.chatbot: gr.update(value=[]), c.user_input: gr.update(value="")}
+
+c = {}
+def create_browser_use_agent_tab(webui_manager):
+    global c
+    webui_manager.init_browser_use_agent()
+    with gr.Column():
+        chatbot = gr.Chatbot(label="Conversation", height=500, type="messages")
+        user_input = gr.Textbox(label="Your Task", placeholder="Describe what you want the AI to do...", lines=3)
+        with gr.Row():
+            run_btn = gr.Button("▶️ Run", variant="primary")
+            clear_btn = gr.Button("🗑️ Clear")
+    c = {"chatbot": chatbot, "user_input": user_input, "run_btn": run_btn, "clear_btn": clear_btn}
+    webui_manager.add_components("browser_use_agent", c)
+    run_btn.click(fn=handle_submit, inputs=[user_input], outputs=[user_input, run_btn, chatbot], api_name=False)
+    clear_btn.click(fn=lambda: handle_clear(webui_manager), inputs=[], outputs=[chatbot, user_input])
