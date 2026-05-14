@@ -1,100 +1,199 @@
-name: Remote AI Split Body Host
+name: WfAgent – VNC + Ollama (Separate Runners, Immediate Commit)
+
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: wfagent-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  # --- RUNNER 1: OLLAMA COMPUTE WORKER ---
-  ollama-host:
+
+  # ==============================================================
+  # JOB 1: VNC tunnel (port 6080) and CDP tunnel (port 9222)
+  # ==============================================================
+  browser-agent:
     runs-on: ubuntu-latest
+    timeout-minutes: 390
     steps:
-      - name: Checkout Code Reference
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Start Ollama Core Service
-        run: |
-          docker run -d --name ollama -p 11434:11434 ollama/ollama:latest
-          sleep 10
-          docker exec -t ollama ollama pull huihui_ai/qwen2.5-coder-abliterate
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Install Cloudflared Client CLI
-        run: |
-          curl -L --output cloudflared.deb github.com
-          sudo dpkg -i cloudflared.deb
-
-      - name: Deploy Isolated Ollama Tunnel Network
-        run: |
-          # Create targets folder structure automatically if absent
-          mkdir -p infra
-          
-          # Initialize background network piping infrastructure
-          cloudflared tunnel --url http://localhost:11434 > ollama.log 2>&1 &
-          sleep 15
-          OLLAMA_URL=$(grep -o 'https://.*\.trycloudflare\.com' ollama.log | head -n 1)
-          echo "Ollama Endpoint URL: $OLLAMA_URL"
-          
-          # Build target infrastructure tracking config schema
-          sudo apt-get install jq -y
-          jq -n --arg o "$OLLAMA_URL" '{ollama_url: $o}' > infra/ollama.json
-
-      - name: Commit Ollama Infrastructure File Separately
-        uses: stefanzweifel/git-auto-commit-action@v5
+      - name: Login to GHCR
+        uses: docker/login-action@v3
         with:
-          commit_message: "Update isolated Ollama deployment link [skip ci]"
-          file_pattern: infra/ollama.json
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Maintain Active Tunnel Connection State
-        # Kept active for 21600 seconds (Exactly 6 Hours)
+      - name: Build Docker image (cached layers)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run VNC/CDP container
+        run: |
+          set -euo pipefail
+          docker rm -f wfagent >/dev/null 2>&1 || true
+          docker run -d --name wfagent \
+            -p 6080:6080 -p 9222:9222 \
+            -e DISPLAY=:99 \
+            -e BROWSER_USE_HEADLESS=false \
+            -e HEADLESS=false \
+            -e RESOLUTION=1920x1080x24 \
+            -e RESOLUTION_WIDTH=1920 \
+            -e RESOLUTION_HEIGHT=1080 \
+            -e VNC_PASSWORD=vncpassword \
+            -e KEEP_BROWSER_OPEN=true \
+            -e ANONYMIZED_TELEMETRY=false \
+            ghcr.io/${{ github.repository }}:latest
+          echo "Waiting for noVNC on 6080 ..."
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:6080/ >/dev/null 2>&1; then
+              echo "✅ noVNC reachable"; break
+            fi
+            if ! docker ps --format '{{.Names}}' | grep -qx wfagent; then
+              echo "❌ Container exited"; docker logs wfagent || true; exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Get Cloudflare tunnel URLs for VNC and CDP
+        id: tunnel
+        run: |
+          curl -L --output cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+          # Tunnel VNC (port 6080)
+          nohup ./cloudflared tunnel --url http://localhost:6080 --no-autoupdate > vnc.log 2>&1 &
+          # Tunnel CDP (port 9222)
+          nohup ./cloudflared tunnel --url http://localhost:9222 --no-autoupdate > cdp.log 2>&1 &
+          sleep 20
+          VNC_URL=$(grep -o "https://.*\.trycloudflare\.com" vnc.log | head -1)
+          CDP_URL=$(grep -o "https://.*\.trycloudflare\.com" cdp.log | head -1)
+          if [ -z "$VNC_URL" ] || [ -z "$CDP_URL" ]; then
+            echo "❌ Failed to get tunnel URLs"
+            exit 1
+          fi
+          echo "vnc_url=$VNC_URL" >> $GITHUB_OUTPUT
+          echo "cdp_url=$CDP_URL" >> $GITHUB_OUTPUT
+
+      - name: Commit VNC and CDP URLs
+        run: |
+          mkdir -p frontend
+          echo "${{ steps.tunnel.outputs.vnc_url }}" > frontend/vnc_url.txt
+          echo "${{ steps.tunnel.outputs.cdp_url }}" > frontend/cdp_url.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/vnc_url.txt frontend/cdp_url.txt
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update VNC/CDP URLs [skip ci]"
+            git push
+            echo "✅ Committed VNC and CDP URLs"
+          fi
+
+      - name: Keep runner alive for 6 hours
         run: sleep 21600
 
-  # --- RUNNER 2: BROWSER CORE & VNC ENGINE WORKER ---
-  browser-host:
+  # ==============================================================
+  # JOB 2: Ollama model (port 11434)
+  # ==============================================================
+  ollama-model:
     runs-on: ubuntu-latest
+    timeout-minutes: 390
     steps:
-      - name: Checkout Code Engine Reference
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Start Chrome & noVNC Framework Web Containers
-        run: |
-          docker run -d --name chrome -p 4444:4444 -p 7900:7900 --shm-size="2g" selenium/standalone-chrome:latest
-          sleep 10
-
-      - name: Install Cloudflared Client CLI
-        run: |
-          curl -L --output cloudflared.deb github.com
-          sudo dpkg -i cloudflared.deb
-
-      - name: Deploy Local App Stream Layer Tunnels
-        run: |
-          # Create targets folder structure automatically if absent
-          mkdir -p infra
-          
-          # Deploy split network tunnel configurations
-          cloudflared tunnel --url http://localhost:4444 > cdp.log 2>&1 &
-          cloudflared tunnel --url http://localhost:7900 > vnc.log 2>&1 &
-          sleep 15
-          
-          CDP_URL=$(grep -o 'https://.*\.trycloudflare\.com' cdp.log | head -n 1)
-          VNC_URL=$(grep -o 'https://.*\.trycloudflare\.com' vnc.log | head -n 1)
-          
-          echo "CDP Protocol Link: $CDP_URL"
-          echo "VNC Visual Link: $VNC_URL"
-          
-          # Build target infrastructure tracking config schema
-          sudo apt-get install jq -y
-          jq -n --arg c "$CDP_URL" --arg v "$VNC_URL" '{cdp_url: $c, vnc_url: $v}' > infra/browser.json
-
-      - name: Commit Local Browser Infrastructure Links
-        uses: stefanzweifel/git-auto-commit-action@v5
+      - name: Restore cached Ollama models
+        uses: actions/cache/restore@v4
         with:
-          commit_message: "Update remote standalone Browser link structures"
-          file_pattern: infra/browser.json
+          path: ~/.ollama
+          key: ollama-abliterated-${{ runner.os }}-v2
+          restore-keys: |
+            ollama-abliterated-${{ runner.os }}-
 
-      - name: Maintain Active Tunnel Connection State
-        # Kept active for 21600 seconds (Exactly 6 Hours)
+      - name: System memory optimisation
+        run: |
+          sudo sysctl -w vm.swappiness=0 || true
+          sync && echo 3 | sudo tee /proc/sys/vm/drop_caches || true
+
+      - name: Install Ollama and start service
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          echo "Waiting for Ollama API..."
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+              echo "Ollama API ready"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Pull self‑hosted model
+        run: |
+          MODEL="huihui_ai/qwen2.5-coder-abliterate"
+          echo "Pulling $MODEL ..."
+          for attempt in 1 2 3; do
+            if ollama pull "$MODEL"; then
+              echo "Pull succeeded on attempt $attempt"
+              break
+            fi
+            echo "Pull attempt $attempt failed, waiting 5 seconds..."
+            sleep 5
+            if [ $attempt -eq 3 ]; then
+              echo "❌ Failed to pull model after 3 attempts"
+              exit 1
+            fi
+          done
+
+      - name: Save cached Ollama models
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ollama
+          key: ollama-abliterated-${{ runner.os }}-v2
+
+      - name: Get Cloudflare tunnel URL for Ollama
+        id: tunnel
+        run: |
+          curl -L --output cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+          nohup ./cloudflared tunnel --url http://localhost:11434 --no-autoupdate > ollama.log 2>&1 &
+          sleep 20
+          OLLAMA_URL=$(grep -o "https://.*\.trycloudflare\.com" ollama.log | head -1)
+          if [ -z "$OLLAMA_URL" ]; then
+            echo "❌ Failed to get Ollama tunnel URL"
+            exit 1
+          fi
+          echo "ollama_url=$OLLAMA_URL" >> $GITHUB_OUTPUT
+          echo "OLLAMA_URL=$OLLAMA_URL"
+
+      - name: Commit Ollama URL
+        run: |
+          mkdir -p frontend
+          echo "${{ steps.tunnel.outputs.ollama_url }}" > frontend/ollama_url.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/ollama_url.txt
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update Ollama URL [skip ci]"
+            git push
+            echo "✅ Committed Ollama URL"
+          fi
+
+      - name: Keep runner alive for 6 hours
         run: sleep 21600
-        
