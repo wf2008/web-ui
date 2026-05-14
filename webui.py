@@ -3,12 +3,14 @@ load_dotenv()
 
 import os
 import argparse
+import time
+import requests
 from pathlib import Path
 from src.webui.interface import theme_map, create_ui
 
-# ------------------------------------------------------------
-# Helper: read a URL from a file and convert protocol if needed
-# ------------------------------------------------------------
+# ------------------------------------------------------------------
+# Helper: read a URL from a file
+# ------------------------------------------------------------------
 def read_url_file(path: str) -> str | None:
     try:
         with open(path, "r") as f:
@@ -17,8 +19,10 @@ def read_url_file(path: str) -> str | None:
     except (FileNotFoundError, OSError):
         return None
 
+# ------------------------------------------------------------------
+# Set environment variable from file content
+# ------------------------------------------------------------------
 def set_env_from_file(file_path: str, env_var: str, convert_to_wss: bool = False):
-    """Read a URL from a file and set it as an environment variable."""
     url = read_url_file(file_path)
     if url:
         if convert_to_wss and url.startswith("https://"):
@@ -28,11 +32,47 @@ def set_env_from_file(file_path: str, env_var: str, convert_to_wss: bool = False
         os.environ[env_var] = url
         print(f"✅ Set {env_var} from {file_path} -> {url}")
     else:
-        print(f"⚠️ {file_path} not found, using existing environment or defaults")
+        print(f"⚠️ {file_path} not found – using existing environment or defaults")
 
-# ------------------------------------------------------------
-# Override environment variables with the three URL files
-# ------------------------------------------------------------
+# ------------------------------------------------------------------
+# Wait for Ollama API to be reachable (with retries)
+# ------------------------------------------------------------------
+def wait_for_ollama(base_url: str, max_retries: int = 30, delay: int = 5) -> bool:
+    """
+    Poll Ollama's /api/tags endpoint until it responds successfully.
+    Returns True if ready, False otherwise.
+    """
+    if not base_url:
+        print("❌ No Ollama URL provided, cannot wait.")
+        return False
+
+    # Ensure the URL does not end with a slash
+    base_url = base_url.rstrip("/")
+    tags_url = f"{base_url}/api/tags"
+
+    for i in range(max_retries):
+        try:
+            resp = requests.get(tags_url, timeout=10)
+            if resp.status_code == 200:
+                print(f"✅ Ollama is ready after {i * delay} seconds.")
+                # Optionally print available models
+                models = resp.json().get("models", [])
+                if models:
+                    names = [m.get("name", "unknown") for m in models]
+                    print(f"   Available models: {', '.join(names)}")
+                return True
+            else:
+                print(f"⏳ Ollama not ready (HTTP {resp.status_code}), retrying...")
+        except requests.exceptions.RequestException as e:
+            print(f"⏳ Ollama not reachable ({e}), retrying...")
+        time.sleep(delay)
+
+    print("❌ Ollama did not become ready within the timeout period.")
+    return False
+
+# ------------------------------------------------------------------
+# Read the three tunnel files and set environment variables
+# ------------------------------------------------------------------
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 # 1. Ollama API endpoint (HTTP)
@@ -44,9 +84,18 @@ set_env_from_file(FRONTEND_DIR / "cdp_url.txt", "CDP_URL", convert_to_wss=True)
 # 3. VNC noVNC endpoint (HTTP) – used by the Gradio iframe
 set_env_from_file(FRONTEND_DIR / "vnc_url.txt", "VNC_URL", convert_to_wss=False)
 
-# ------------------------------------------------------------
+# ------------------------------------------------------------------
+# Wait for Ollama to become responsive
+# ------------------------------------------------------------------
+ollama_url = os.environ.get("OLLAMA_BASE_URL")
+if ollama_url:
+    wait_for_ollama(ollama_url, max_retries=30, delay=5)
+else:
+    print("⚠️ No Ollama URL set – the UI will show a connection error.")
+
+# ------------------------------------------------------------------
 # Original main function (unchanged)
-# ------------------------------------------------------------
+# ------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Gradio WebUI for Browser Agent")
     parser.add_argument("--ip", type=str, default="127.0.0.1", help="IP address to bind to")
@@ -57,6 +106,5 @@ def main():
     demo = create_ui(theme_name=args.theme)
     demo.queue().launch(server_name=args.ip, server_port=args.port)
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
