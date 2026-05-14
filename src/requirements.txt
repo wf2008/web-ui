@@ -3,3 +3,4 @@ browser-use
 langchain-ollama
 python-dotenv
 playwright
+setuptools
