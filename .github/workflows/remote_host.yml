@@ -1,0 +1,100 @@
+name: Remote AI Split Body Host
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # --- RUNNER 1: OLLAMA COMPUTE WORKER ---
+  ollama-host:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code Reference
+        uses: actions/checkout@v4
+
+      - name: Start Ollama Core Service
+        run: |
+          docker run -d --name ollama -p 11434:11434 ollama/ollama:latest
+          sleep 10
+          docker exec -t ollama ollama pull huihui_ai/qwen2.5-coder-abliterate
+
+      - name: Install Cloudflared Client CLI
+        run: |
+          curl -L --output cloudflared.deb github.com
+          sudo dpkg -i cloudflared.deb
+
+      - name: Deploy Isolated Ollama Tunnel Network
+        run: |
+          # Create targets folder structure automatically if absent
+          mkdir -p infra
+          
+          # Initialize background network piping infrastructure
+          cloudflared tunnel --url http://localhost:11434 > ollama.log 2>&1 &
+          sleep 15
+          OLLAMA_URL=$(grep -o 'https://.*\.trycloudflare\.com' ollama.log | head -n 1)
+          echo "Ollama Endpoint URL: $OLLAMA_URL"
+          
+          # Build target infrastructure tracking config schema
+          sudo apt-get install jq -y
+          jq -n --arg o "$OLLAMA_URL" '{ollama_url: $o}' > infra/ollama.json
+
+      - name: Commit Ollama Infrastructure File Separately
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update isolated Ollama deployment link [skip ci]"
+          file_pattern: infra/ollama.json
+
+      - name: Maintain Active Tunnel Connection State
+        # Kept active for 21600 seconds (Exactly 6 Hours)
+        run: sleep 21600
+
+  # --- RUNNER 2: BROWSER CORE & VNC ENGINE WORKER ---
+  browser-host:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code Engine Reference
+        uses: actions/checkout@v4
+
+      - name: Start Chrome & noVNC Framework Web Containers
+        run: |
+          docker run -d --name chrome -p 4444:4444 -p 7900:7900 --shm-size="2g" selenium/standalone-chrome:latest
+          sleep 10
+
+      - name: Install Cloudflared Client CLI
+        run: |
+          curl -L --output cloudflared.deb github.com
+          sudo dpkg -i cloudflared.deb
+
+      - name: Deploy Local App Stream Layer Tunnels
+        run: |
+          # Create targets folder structure automatically if absent
+          mkdir -p infra
+          
+          # Deploy split network tunnel configurations
+          cloudflared tunnel --url http://localhost:4444 > cdp.log 2>&1 &
+          cloudflared tunnel --url http://localhost:7900 > vnc.log 2>&1 &
+          sleep 15
+          
+          CDP_URL=$(grep -o 'https://.*\.trycloudflare\.com' cdp.log | head -n 1)
+          VNC_URL=$(grep -o 'https://.*\.trycloudflare\.com' vnc.log | head -n 1)
+          
+          echo "CDP Protocol Link: $CDP_URL"
+          echo "VNC Visual Link: $VNC_URL"
+          
+          # Build target infrastructure tracking config schema
+          sudo apt-get install jq -y
+          jq -n --arg c "$CDP_URL" --arg v "$VNC_URL" '{cdp_url: $c, vnc_url: $v}' > infra/browser.json
+
+      - name: Commit Local Browser Infrastructure Links
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update remote standalone Browser link structures"
+          file_pattern: infra/browser.json
+
+      - name: Maintain Active Tunnel Connection State
+        # Kept active for 21600 seconds (Exactly 6 Hours)
+        run: sleep 21600
+        
