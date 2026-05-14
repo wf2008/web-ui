@@ -1,4 +1,5 @@
 import gradio as gr
+import os
 
 from src.webui.webui_manager import WebuiManager
 from src.webui.components.agent_settings_tab import create_agent_settings_tab
@@ -42,11 +43,9 @@ def create_ui(theme_name="Ocean"):
     }
     """
 
-    # dark mode in default
     js_func = """
     function refresh() {
         const url = new URL(window.location);
-
         if (url.searchParams.get('__theme') !== 'dark') {
             url.searchParams.set('__theme', 'dark');
             window.location.href = url.href;
@@ -77,6 +76,36 @@ def create_ui(theme_name="Ocean"):
 
             with gr.TabItem("🤖 Run Agent"):
                 create_browser_use_agent_tab(ui_manager)
+
+            # ========== NEW VNC TAB ==========
+            with gr.TabItem("🖥️ Live Browser"):
+                vnc_url = os.environ.get("VNC_URL", "")
+                if vnc_url:
+                    clean_url = vnc_url.rstrip("/")
+                    iframe_html = f'''
+                    <iframe
+                        src="{clean_url}/vnc.html?autoconnect=true&resize=scale&password=vncpassword"
+                        width="100%"
+                        height="650"
+                        style="border: none; border-radius: 8px; background: #0a0a0a;"
+                        allow="fullscreen"
+                    ></iframe>
+                    <p style="font-size: 0.85rem; color: #888; margin-top: 10px;">
+                        🔍 <strong>Troubleshooting:</strong> If the browser doesn't appear,
+                        ensure your GitHub Actions workflow is running and the tunnel is active.
+                    </p>
+                    '''
+                    gr.HTML(iframe_html)
+                else:
+                    gr.HTML('''
+                    <div style="padding: 50px; text-align: center; background: #1e1e1e; border-radius: 12px;">
+                        <h3>🔴 VNC Not Available</h3>
+                        <p>The VNC stream is offline.</p>
+                        <p>👉 Run your <strong>GitHub Actions workflow</strong> to start the browser.</p>
+                        <p>Once the workflow finishes, refresh this page.</p>
+                    </div>
+                    ''')
+            # ========== END OF NEW VNC TAB ==========
 
             with gr.TabItem("🎁 Agent Marketplace"):
                 gr.Markdown(
