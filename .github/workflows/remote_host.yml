@@ -94,6 +94,7 @@ jobs:
           echo "${{ steps.tunnel.outputs.cdp_url }}" > frontend/cdp_url.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
           git add frontend/vnc_url.txt frontend/cdp_url.txt
           if git diff --staged --quiet; then
             echo "No changes to commit"
@@ -186,6 +187,7 @@ jobs:
           echo "${{ steps.tunnel.outputs.ollama_url }}" > frontend/ollama_url.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
           git add frontend/ollama_url.txt
           if git diff --staged --quiet; then
             echo "No changes to commit"
