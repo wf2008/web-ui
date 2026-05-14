@@ -1,17 +1,19 @@
-from dotenv import load_dotenv
-load_dotenv()
-
 import os
 import argparse
 import time
 import requests
 from pathlib import Path
+from dotenv import load_dotenv
 from src.webui.interface import theme_map, create_ui
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ------------------------------------------------------------------
 # Helper: read a URL from a file
 # ------------------------------------------------------------------
-def read_url_file(path: str) -> str | None:
+def read_url_file(path: Path) -> str | None:
+    """Read a URL from a text file. Returns None if file does not exist."""
     try:
         with open(path, "r") as f:
             url = f.read().strip()
@@ -20,9 +22,19 @@ def read_url_file(path: str) -> str | None:
         return None
 
 # ------------------------------------------------------------------
+# Helper: write a URL to a file (for debugging)
+# ------------------------------------------------------------------
+def write_url_file(path: Path, url: str):
+    """Write a URL to a text file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        f.write(url)
+
+# ------------------------------------------------------------------
 # Set environment variable from file content
 # ------------------------------------------------------------------
-def set_env_from_file(file_path: str, env_var: str, convert_to_wss: bool = False):
+def set_env_from_file(file_path: Path, env_var: str, convert_to_wss: bool = False):
+    """Read URL from file and set as environment variable."""
     url = read_url_file(file_path)
     if url:
         if convert_to_wss and url.startswith("https://"):
@@ -55,7 +67,7 @@ def wait_for_ollama(base_url: str, max_retries: int = 30, delay: int = 5) -> boo
             resp = requests.get(tags_url, timeout=10)
             if resp.status_code == 200:
                 print(f"✅ Ollama is ready after {i * delay} seconds.")
-                # Optionally print available models
+                # Print available models to confirm the service is working
                 models = resp.json().get("models", [])
                 if models:
                     names = [m.get("name", "unknown") for m in models]
@@ -77,6 +89,7 @@ FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 # 1. Ollama API endpoint (HTTP)
 set_env_from_file(FRONTEND_DIR / "ollama_url.txt", "OLLAMA_BASE_URL", convert_to_wss=False)
+set_env_from_file(FRONTEND_DIR / "ollama_url.txt", "OLLAMA_ENDPOINT", convert_to_wss=False)
 
 # 2. Chrome DevTools Protocol endpoint (WebSocket) – used by the browser agent
 set_env_from_file(FRONTEND_DIR / "cdp_url.txt", "CDP_URL", convert_to_wss=True)
@@ -84,10 +97,14 @@ set_env_from_file(FRONTEND_DIR / "cdp_url.txt", "CDP_URL", convert_to_wss=True)
 # 3. VNC noVNC endpoint (HTTP) – used by the Gradio iframe
 set_env_from_file(FRONTEND_DIR / "vnc_url.txt", "VNC_URL", convert_to_wss=False)
 
+# Set a dummy OpenAI API key to prevent the UI from defaulting to OpenAI
+if not os.environ.get("OPENAI_API_KEY"):
+    os.environ["OPENAI_API_KEY"] = "ollama-no-key-needed"
+
 # ------------------------------------------------------------------
 # Wait for Ollama to become responsive
 # ------------------------------------------------------------------
-ollama_url = os.environ.get("OLLAMA_BASE_URL")
+ollama_url = os.environ.get("OLLAMA_ENDPOINT") or os.environ.get("OLLAMA_BASE_URL")
 if ollama_url:
     wait_for_ollama(ollama_url, max_retries=30, delay=5)
 else:
