@@ -10,9 +10,10 @@ from src.controller.custom_controller import CustomController
 from src.webui.webui_manager import WebuiManager
 
 def _get_ollama_llm():
-    base_url = os.environ.get("OLLAMA_BASE_URL")
+    base_url = os.environ.get("OLLAMA_BASE_URL") or os.environ.get("OLLAMA_ENDPOINT")
     if not base_url:
-        raise ValueError("OLLAMA_BASE_URL not set")
+        raise ValueError("OLLAMA_BASE_URL not set – run GitHub Actions workflow first")
+    print(f"[DEBUG] Using Ollama at {base_url}")
     return ChatOllama(
         model="huihui_ai/qwen2.5-coder-abliterate",
         base_url=base_url,
@@ -22,16 +23,16 @@ def _get_ollama_llm():
 
 def _normalize_cdp_url(url: str) -> str:
     if url.startswith("https://"):
-        return "wss://" + url[len("https://"):]
+        return "wss://" + url[8:]
     if url.startswith("http://"):
-        return "ws://" + url[len("http://"):]
+        return "ws://" + url[7:]
     return url
 
 async def run_agent(webui_manager, task):
     llm = _get_ollama_llm()
     cdp = os.environ.get("CDP_URL")
     if not cdp:
-        raise ValueError("CDP_URL not set")
+        raise ValueError("CDP_URL not set – run GitHub Actions workflow first")
     browser = CustomBrowser(
         config=BrowserConfig(
             headless=False,
