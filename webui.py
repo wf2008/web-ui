@@ -23,7 +23,7 @@ vnc_url   = read_url_file(FRONTEND_DIR / "vnc_url.txt")
 if ollama_url:
     os.environ["OLLAMA_BASE_URL"] = ollama_url
     os.environ["OLLAMA_ENDPOINT"] = ollama_url
-    print(f"✅ OLLAMA_BASE_URL set to {ollama_url}")
+    print(f"✅ OLLAMA_BASE_URL = {ollama_url}")
 else:
     print("⚠️ frontend/ollama_url.txt not found")
 
@@ -33,17 +33,20 @@ if cdp_url:
     elif cdp_url.startswith("http://"):
         cdp_url = "ws://" + cdp_url[7:]
     os.environ["CDP_URL"] = cdp_url
-    print(f"✅ CDP_URL set to {cdp_url}")
+    print(f"✅ CDP_URL = {cdp_url}")
 else:
     print("⚠️ frontend/cdp_url.txt not found")
 
 if vnc_url:
     os.environ["VNC_URL"] = vnc_url
-    print(f"✅ VNC_URL set to {vnc_url}")
+    print(f"✅ VNC_URL = {vnc_url}")
 else:
     print("⚠️ frontend/vnc_url.txt not found")
 
-# Import UI only after env vars are set
+# Force Ollama as the provider and disable OpenAI fallback
+os.environ["LLM_PROVIDER"] = "ollama"
+os.environ["OPENAI_API_KEY"] = "ollama-no-key-needed"
+
 from src.webui.interface import theme_map, create_ui
 
 def main():
